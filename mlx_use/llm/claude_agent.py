@@ -91,15 +91,14 @@ class _ClaudeStructuredOutputRunnable:
 		self._schema_json = json.dumps(schema.model_json_schema(), indent=2) if hasattr(schema, 'model_json_schema') else '{}'
 
 	async def ainvoke(self, input: list, config: dict | None = None, **kwargs: object) -> dict | object:
-		from langchain_core.messages import SystemMessage as SM
+		from langchain_core.messages import SystemMessage as SM, AIMessage as AIM
 
 		json_instruction = SM(
 			content=f'You MUST respond ONLY with valid JSON matching this schema. No markdown, no explanation, no extra text — just the JSON object:\n\n{self._schema_json}'
 		)
 		messages = [json_instruction] + list(input)
 
-		result = await self._llm._agenerate(messages)
-		raw_msg = result.generations[0].message
+		raw_msg = await self._llm.ainvoke(messages)
 		raw_text = raw_msg.content if isinstance(raw_msg.content, str) else str(raw_msg.content)
 
 		parsed = None
