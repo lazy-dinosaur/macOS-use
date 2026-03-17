@@ -81,6 +81,53 @@ else:
 	ClaudeAgentSDKModule = object
 
 
+class _ClaudeStructuredOutputRunnable:
+	"""Wraps ChatClaudeAgent to parse structured JSON output from Claude responses."""
+
+	def __init__(self, llm: 'ChatClaudeAgent', schema: type, include_raw: bool = False):
+		self._llm = llm
+		self._schema = schema
+		self._include_raw = include_raw
+		self._schema_json = json.dumps(schema.model_json_schema(), indent=2) if hasattr(schema, 'model_json_schema') else '{}'
+
+	async def ainvoke(self, input: list, config: dict | None = None, **kwargs: object) -> dict | object:
+		from langchain_core.messages import SystemMessage as SM
+
+		json_instruction = SM(
+			content=f'You MUST respond ONLY with valid JSON matching this schema. No markdown, no explanation, no extra text — just the JSON object:\n\n{self._schema_json}'
+		)
+		messages = [json_instruction] + list(input)
+
+		result = await self._llm._agenerate(messages)
+		raw_msg = result.generations[0].message
+		raw_text = raw_msg.content if isinstance(raw_msg.content, str) else str(raw_msg.content)
+
+		parsed = None
+		parsing_error = None
+		try:
+			clean = raw_text.strip()
+			if clean.startswith('```'):
+				lines = clean.split('\n')
+				lines = lines[1:]  # remove ```json
+				if lines and lines[-1].strip() == '```':
+					lines = lines[:-1]
+				clean = '\n'.join(lines)
+			parsed = self._schema.model_validate_json(clean)
+		except Exception as e:
+			parsing_error = e
+
+		if self._include_raw:
+			return {'raw': raw_msg, 'parsed': parsed, 'parsing_error': parsing_error}
+		if parsed is None:
+			raise parsing_error or ValueError(f'Failed to parse response: {raw_text[:200]}')
+		return parsed
+
+	def invoke(self, input: list, config: dict | None = None, **kwargs: object) -> dict | object:
+		import asyncio
+
+		return asyncio.run(self.ainvoke(input, config, **kwargs))
+
+
 class ChatClaudeAgent(BaseChatModel):
 	model: str = 'claude-sonnet-4-6'
 	cli_path: str | None = None
@@ -102,6 +149,11 @@ class ChatClaudeAgent(BaseChatModel):
 			'cwd': self.cwd,
 			'max_turns': self.max_turns,
 		}
+
+	def with_structured_output(
+		self, schema: type, *, include_raw: bool = False, **kwargs: object
+	) -> _ClaudeStructuredOutputRunnable:
+		return _ClaudeStructuredOutputRunnable(self, schema, include_raw=include_raw)
 
 	async def _agenerate(
 		self,
